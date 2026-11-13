@@ -1,0 +1,6 @@
+{
+  "name": "Gjn WM Status",
+  "description": "Live uptime monitor, 90-day history, response latency charts, and incident feed for status.gjnwm.dpdns.org",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
