@@ -101,4 +101,12 @@ class StatusParsingAndTimeTest {
     assertEquals("16m 17s", TimeFormatters.formatDurationSeconds(977L))
     assertEquals("99.880%", TimeFormatters.formatUptimePct(99.88))
   }
+
+  @Test
+  fun `encodes and decodes persisted monitor statuses`() {
+    val statuses = mapOf(5 to "up", 2 to "down", 1 to "up")
+    val encoded = com.example.data.preferences.UserPreferencesRepository.encodeStatuses(statuses)
+    val decoded = com.example.data.preferences.UserPreferencesRepository.decodeStatuses(encoded)
+    assertEquals(statuses, decoded)
+  }
 }

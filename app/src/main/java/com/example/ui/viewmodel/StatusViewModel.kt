@@ -11,7 +11,9 @@ import com.example.data.preferences.ThemePreference
 import com.example.data.preferences.UserPreferences
 import com.example.data.preferences.UserPreferencesRepository
 import com.example.data.repository.StatusRepository
+import com.example.notifications.OutageNotificationManager
 import com.example.util.AlertAudioPlayer
+import com.example.worker.StatusMonitorScheduler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +21,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -122,42 +127,60 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
   private val _detailState = MutableStateFlow(MonitorDetailUiState())
   val detailState: StateFlow<MonitorDetailUiState> = _detailState.asStateFlow()
 
-  private var previousStatuses: Map<Int, String> = emptyMap()
   private var pollingJob: Job? = null
   private var detailJob: Job? = null
 
   init {
+    OutageNotificationManager.ensureChannel(application)
     refreshOverview(isManual = false)
     observePollingCadence()
+    observeBackgroundWorkerSchedule()
+  }
+
+  private fun observeBackgroundWorkerSchedule() {
+    viewModelScope.launch {
+      userPreferences
+        .map { it.pushNotificationsEnabled to it.backgroundIntervalMinutes }
+        .distinctUntilChanged()
+        .collectLatest { (enabled, intervalMinutes) ->
+          StatusMonitorScheduler.syncSchedule(
+            context = getApplication(),
+            enabled = enabled,
+            intervalMinutes = intervalMinutes,
+          )
+        }
+    }
   }
 
   private fun observePollingCadence() {
     viewModelScope.launch {
-      userPreferences.collectLatest { prefs ->
-        pollingJob?.cancel()
-        val interval = prefs.refreshIntervalSeconds
-        if (interval <= 0) {
-          _overviewState.update { it.copy(countdownSeconds = 0) }
-          return@collectLatest
-        }
-        pollingJob =
-          launch {
-            var remaining = interval
-            while (true) {
-              _overviewState.update { it.copy(countdownSeconds = remaining) }
-              delay(1_000L)
-              remaining--
-              if (remaining <= 0) {
-                refreshOverview(isManual = false)
-                val activeDetailId = _detailState.value.monitorId
-                if (activeDetailId != null) {
-                  loadMonitorDetail(activeDetailId, _detailState.value.selectedRange, silent = true)
+      userPreferences
+        .map { it.refreshIntervalSeconds }
+        .distinctUntilChanged()
+        .collectLatest { interval ->
+          pollingJob?.cancel()
+          if (interval <= 0) {
+            _overviewState.update { it.copy(countdownSeconds = 0) }
+            return@collectLatest
+          }
+          pollingJob =
+            launch {
+              var remaining = interval
+              while (true) {
+                _overviewState.update { it.copy(countdownSeconds = remaining) }
+                delay(1_000L)
+                remaining--
+                if (remaining <= 0) {
+                  refreshOverview(isManual = false)
+                  val activeDetailId = _detailState.value.monitorId
+                  if (activeDetailId != null) {
+                    loadMonitorDetail(activeDetailId, _detailState.value.selectedRange, silent = true)
+                  }
+                  remaining = interval
                 }
-                remaining = interval
               }
             }
-          }
-      }
+        }
     }
   }
 
@@ -173,7 +196,7 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
       repository
         .fetchOverview()
         .onSuccess { data ->
-          detectOutageTransition(data)
+          handleMonitorTransitions(data)
           val defaultSplitId =
             _overviewState.value.selectedMonitorIdForSplit ?: data.monitors.firstOrNull()?.id
           val resetCountdown = userPreferences.value.refreshIntervalSeconds
@@ -204,17 +227,49 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
-  private fun detectOutageTransition(data: StatusOverviewDto) {
+  private suspend fun handleMonitorTransitions(data: StatusOverviewDto) {
+    val prefs = prefsRepository.preferences.first()
+    val previousStatuses = prefs.lastKnownMonitorStatuses
     val newStatuses = data.monitors.associate { it.id to it.status.lowercase() }
-    val wentDown =
-      previousStatuses.isNotEmpty() &&
-        newStatuses.any { (id, status) ->
-          status == "down" && previousStatuses[id] != null && previousStatuses[id] != "down"
+
+    val newlyDownMonitors =
+      data.monitors.filter { monitor ->
+        val curr = monitor.status.lowercase()
+        val prev = previousStatuses[monitor.id]
+        curr == "down" && prev != "down"
+      }
+
+    val recoveredMonitors =
+      data.monitors.filter { monitor ->
+        val curr = monitor.status.lowercase()
+        val prev = previousStatuses[monitor.id]
+        curr == "up" && prev == "down"
+      }
+
+    if (newlyDownMonitors.isNotEmpty()) {
+      if (prefs.alertSoundEnabled) {
+        viewModelScope.launch { AlertAudioPlayer.playOutageChime() }
+      }
+      if (prefs.pushNotificationsEnabled) {
+        val appContext = getApplication<Application>()
+        for (monitor in newlyDownMonitors) {
+          val reason =
+            runCatching {
+              repository.fetchMonitorDetail(monitor.id, "24h").getOrNull()?.incidents?.firstOrNull()?.reason
+            }.getOrNull()
+          OutageNotificationManager.notifyServerDown(appContext, monitor, reason)
         }
-    previousStatuses = newStatuses
-    if (wentDown && userPreferences.value.alertSoundEnabled) {
-      viewModelScope.launch { AlertAudioPlayer.playOutageChime() }
+      }
     }
+
+    if (recoveredMonitors.isNotEmpty() && prefs.pushNotificationsEnabled && prefs.notifyOnRecovery) {
+      val appContext = getApplication<Application>()
+      for (monitor in recoveredMonitors) {
+        OutageNotificationManager.notifyServerRecovered(appContext, monitor)
+      }
+    }
+
+    prefsRepository.saveLastKnownMonitorStatuses(newStatuses)
   }
 
   fun updateSearchQuery(query: String) {
@@ -277,7 +332,11 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     _incidentsState.update { it.copy(statusFilter = filter) }
   }
 
-  fun loadMonitorDetail(monitorId: Int, range: String = _detailState.value.selectedRange, silent: Boolean = false) {
+  fun loadMonitorDetail(
+    monitorId: Int,
+    range: String = _detailState.value.selectedRange,
+    silent: Boolean = false,
+  ) {
     detailJob?.cancel()
     detailJob =
       viewModelScope.launch {
@@ -326,7 +385,32 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
+  fun setPushNotificationsEnabled(enabled: Boolean) {
+    viewModelScope.launch { prefsRepository.setPushNotificationsEnabled(enabled) }
+  }
+
+  fun setNotifyOnRecovery(enabled: Boolean) {
+    viewModelScope.launch { prefsRepository.setNotifyOnRecovery(enabled) }
+  }
+
+  fun setBackgroundIntervalMinutes(minutes: Long) {
+    viewModelScope.launch { prefsRepository.setBackgroundIntervalMinutes(minutes) }
+  }
+
+  fun dismissNotificationBanner() {
+    viewModelScope.launch { prefsRepository.setNotificationBannerDismissed(true) }
+  }
+
   fun testAlertChime() {
     viewModelScope.launch { AlertAudioPlayer.playOutageChime() }
+  }
+
+  fun sendTestPushNotification() {
+    val firstMonitor = _overviewState.value.overview?.monitors?.firstOrNull()
+    OutageNotificationManager.sendTestOutageAlert(
+      context = getApplication(),
+      sampleMonitorId = firstMonitor?.id ?: 2,
+      sampleName = firstMonitor?.name ?: "ITMSU",
+    )
   }
 }

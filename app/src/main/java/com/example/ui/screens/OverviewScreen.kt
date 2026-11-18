@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -23,8 +22,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Construction
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,6 +65,9 @@ fun OverviewScreen(
   uiState: OverviewUiState,
   detailState: MonitorDetailUiState,
   latestIncident: IncidentDto?,
+  showNotificationPromptBanner: Boolean,
+  onEnableNotificationsClick: () -> Unit,
+  onDismissNotificationBanner: () -> Unit,
   onRefresh: () -> Unit,
   onSearchChange: (String) -> Unit,
   onFilterChange: (OverviewFilter) -> Unit,
@@ -113,6 +117,15 @@ fun OverviewScreen(
                 aggregate90dUptime = uiState.aggregate90dUptime,
                 latestIncident = latestIncident,
               )
+            }
+
+            if (showNotificationPromptBanner) {
+              item(key = "notification_prompt_banner") {
+                NotificationOptInBannerCard(
+                  onEnableClick = onEnableNotificationsClick,
+                  onDismissClick = onDismissNotificationBanner,
+                )
+              }
             }
 
             if (overview.announcements.isNotEmpty()) {
@@ -275,6 +288,73 @@ fun OverviewScreen(
       }
     } else {
       listContent(Modifier.fillMaxSize())
+    }
+  }
+}
+
+@Composable
+private fun NotificationOptInBannerCard(
+  onEnableClick: () -> Unit,
+  onDismissClick: () -> Unit,
+) {
+  val statusColors = LocalStatusColors.current
+  Card(
+    modifier = Modifier.fillMaxWidth().testTag("notification_opt_in_banner"),
+    shape = RoundedCornerShape(16.dp),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+      ) {
+        Row(
+          modifier = Modifier.weight(1f),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.NotificationsActive,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+          )
+          Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+              text = stringResource(R.string.banner_notifications_title),
+              style = MaterialTheme.typography.titleSmall,
+              color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+              text = stringResource(R.string.banner_notifications_desc),
+              style = MaterialTheme.typography.bodySmall,
+              color = statusColors.muted,
+            )
+          }
+        }
+        IconButton(
+          onClick = onDismissClick,
+          modifier = Modifier.size(32.dp).testTag("dismiss_notification_banner"),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.Close,
+            contentDescription = "Dismiss notification banner",
+            tint = statusColors.muted,
+            modifier = Modifier.size(18.dp),
+          )
+        }
+      }
+      Button(
+        onClick = onEnableClick,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().testTag("enable_push_alerts_button"),
+      ) {
+        Text(text = stringResource(R.string.action_enable_notifications))
+      }
     }
   }
 }

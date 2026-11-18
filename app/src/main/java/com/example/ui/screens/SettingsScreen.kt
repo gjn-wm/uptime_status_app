@@ -22,19 +22,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.RssFeed
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,8 +61,14 @@ import com.example.ui.theme.LocalStatusColors
 @Composable
 fun SettingsScreen(
   preferences: UserPreferences,
+  hasNotificationPermission: Boolean,
   lastUpdatedUtc: String?,
   monitorCount: Int,
+  onRequestNotificationPermission: () -> Unit,
+  onPushNotificationsToggle: (Boolean) -> Unit,
+  onNotifyOnRecoveryToggle: (Boolean) -> Unit,
+  onBackgroundIntervalChange: (Long) -> Unit,
+  onSendTestPushNotification: () -> Unit,
   onThemeChange: (ThemePreference) -> Unit,
   onRefreshIntervalChange: (Int) -> Unit,
   onAlertSoundToggle: (Boolean) -> Unit,
@@ -162,6 +172,156 @@ fun SettingsScreen(
                 Text("RSS Feed", style = MaterialTheme.typography.labelLarge)
               }
             }
+          }
+        }
+      }
+    }
+
+    item(key = "push_notifications_card") {
+      Card(
+        modifier = Modifier.fillMaxWidth().testTag("push_notifications_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, statusColors.border),
+      ) {
+        Column(
+          modifier = Modifier.fillMaxWidth().padding(16.dp),
+          verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+              modifier = Modifier.weight(1f),
+            ) {
+              Icon(
+                imageVector =
+                  if (hasNotificationPermission) Icons.Rounded.NotificationsActive
+                  else Icons.Rounded.NotificationsOff,
+                contentDescription = null,
+                tint =
+                  if (hasNotificationPermission) MaterialTheme.colorScheme.primary
+                  else statusColors.degraded,
+              )
+              Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                  text = stringResource(R.string.settings_push_title),
+                  style = MaterialTheme.typography.titleMedium,
+                  color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                  text = stringResource(R.string.settings_push_desc),
+                  style = MaterialTheme.typography.bodySmall,
+                  color = statusColors.muted,
+                )
+              }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Switch(
+              checked = preferences.pushNotificationsEnabled && hasNotificationPermission,
+              onCheckedChange = { checked ->
+                if (checked && !hasNotificationPermission) {
+                  onRequestNotificationPermission()
+                } else {
+                  onPushNotificationsToggle(checked)
+                }
+              },
+              modifier = Modifier.testTag("push_notifications_switch"),
+            )
+          }
+
+          if (!hasNotificationPermission) {
+            Surface(
+              color = statusColors.degradedContainer,
+              shape = RoundedCornerShape(12.dp),
+              border = BorderStroke(1.dp, statusColors.degraded.copy(alpha = 0.4f)),
+            ) {
+              Column(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Text(
+                  text = "Notification permission is currently disabled in Android system settings.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = statusColors.degraded,
+                )
+                Button(
+                  onClick = onRequestNotificationPermission,
+                  modifier = Modifier.fillMaxWidth().testTag("grant_notification_permission_button"),
+                ) {
+                  Text(text = stringResource(R.string.action_enable_notifications))
+                }
+              }
+            }
+          }
+
+          HorizontalDivider(color = statusColors.border)
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+              Text(
+                text = stringResource(R.string.settings_recovery_title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+              )
+              Text(
+                text = stringResource(R.string.settings_recovery_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = statusColors.muted,
+              )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Switch(
+              checked = preferences.notifyOnRecovery,
+              enabled = preferences.pushNotificationsEnabled && hasNotificationPermission,
+              onCheckedChange = onNotifyOnRecoveryToggle,
+              modifier = Modifier.testTag("recovery_notifications_switch"),
+            )
+          }
+
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = stringResource(R.string.settings_bg_check_title),
+              style = MaterialTheme.typography.titleSmall,
+              color = MaterialTheme.colorScheme.onSurface,
+            )
+            val bgIntervals = listOf(15L to "15m", 30L to "30m", 60L to "1h", 0L to "Off")
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+              bgIntervals.forEachIndexed { idx, (mins, label) ->
+                SegmentedButton(
+                  selected = preferences.backgroundIntervalMinutes == mins,
+                  onClick = { onBackgroundIntervalChange(mins) },
+                  shape = SegmentedButtonDefaults.itemShape(index = idx, count = bgIntervals.size),
+                  modifier = Modifier.testTag("bg_interval_$mins"),
+                ) {
+                  Text(text = label, style = MaterialTheme.typography.labelSmall)
+                }
+              }
+            }
+          }
+
+          OutlinedButton(
+            onClick = {
+              if (!hasNotificationPermission) onRequestNotificationPermission()
+              else onSendTestPushNotification()
+            },
+            modifier = Modifier.fillMaxWidth().testTag("test_push_notification_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.NotificationsActive,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(text = stringResource(R.string.action_test_notification))
           }
         }
       }
@@ -277,7 +437,7 @@ fun SettingsScreen(
               modifier = Modifier.weight(1f),
             ) {
               Icon(
-                imageVector = Icons.Rounded.NotificationsActive,
+                imageVector = Icons.Rounded.VolumeUp,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
               )

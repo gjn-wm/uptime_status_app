@@ -43,7 +43,16 @@
     <string name="error_network_title">Unable to reach status.gjnwm.dpdns.org</string>
     <string name="settings_appearance_title">Appearance</string>
     <string name="settings_refresh_title">Live Polling Cadence</string>
-    <string name="settings_alerts_title">Outage Alerts</string>
+    <string name="settings_alerts_title">Sound &amp; Push Alerts</string>
     <string name="settings_alerts_desc">Play an audible chime when a service transitions to down during live polling.</string>
+    <string name="settings_push_title">Server Down Push Alerts</string>
+    <string name="settings_push_desc">Send a high-priority notification when any monitored server goes down, even in the background.</string>
+    <string name="settings_recovery_title">Recovery Notifications</string>
+    <string name="settings_recovery_desc">Notify when a server that was down returns to operational status.</string>
+    <string name="settings_bg_check_title">Background Check Interval</string>
+    <string name="action_test_notification">Send test push alert</string>
+    <string name="action_enable_notifications">Enable Push Alerts</string>
+    <string name="banner_notifications_title">Get notified when a server goes down</string>
+    <string name="banner_notifications_desc">Allow notifications so Gjn WM Status can alert you immediately during outages.</string>
     <string name="settings_source_title">Status Endpoint</string>
 </resources>

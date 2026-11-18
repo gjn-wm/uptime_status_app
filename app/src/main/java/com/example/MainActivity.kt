@@ -1,10 +1,15 @@
 package com.example
 
+import android.Manifest
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -42,15 +47,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -61,6 +74,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.data.preferences.ThemePreference
+import com.example.notifications.OutageNotificationManager
 import com.example.ui.components.StatusPulseDot
 import com.example.ui.screens.IncidentsScreen
 import com.example.ui.screens.MonitorDetailScreen
@@ -69,6 +83,7 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.GjnWmStatusTheme
 import com.example.ui.theme.LocalStatusColors
 import com.example.ui.viewmodel.StatusViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 
 private data class TopLevelTab(
   val route: String,
@@ -100,12 +115,17 @@ private val topLevelTabs =
   )
 
 class MainActivity : ComponentActivity() {
+
+  private val pendingDeepLinkMonitorId = MutableStateFlow<Int?>(null)
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    extractMonitorDeepLink(intent)
     enableEdgeToEdge()
     setContent {
       val viewModel: StatusViewModel = viewModel()
       val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
+      val deepLinkMonitorId by pendingDeepLinkMonitorId.collectAsStateWithLifecycle()
       val systemDark = isSystemInDarkTheme()
       val isDark =
         when (preferences.themePreference) {
@@ -126,15 +146,39 @@ class MainActivity : ComponentActivity() {
       }
 
       GjnWmStatusTheme(themePreference = preferences.themePreference) {
-        GjnWmStatusApp(viewModel = viewModel)
+        GjnWmStatusApp(
+          viewModel = viewModel,
+          deepLinkMonitorId = deepLinkMonitorId,
+          onDeepLinkConsumed = { pendingDeepLinkMonitorId.value = null },
+        )
       }
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    extractMonitorDeepLink(intent)
+  }
+
+  private fun extractMonitorDeepLink(intent: Intent?) {
+    val monitorId = intent?.getIntExtra(OutageNotificationManager.EXTRA_MONITOR_ID, -1) ?: -1
+    if (monitorId > 0) {
+      pendingDeepLinkMonitorId.value = monitorId
+      intent?.removeExtra(OutageNotificationManager.EXTRA_MONITOR_ID)
     }
   }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GjnWmStatusApp(viewModel: StatusViewModel) {
+fun GjnWmStatusApp(
+  viewModel: StatusViewModel,
+  deepLinkMonitorId: Int?,
+  onDeepLinkConsumed: () -> Unit,
+) {
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
   val navController = rememberNavController()
   val backStackEntry by navController.currentBackStackEntryAsState()
   val currentRoute = backStackEntry?.destination?.route
@@ -144,9 +188,52 @@ fun GjnWmStatusApp(viewModel: StatusViewModel) {
   val detailState by viewModel.detailState.collectAsStateWithLifecycle()
   val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
 
+  var hasNotificationPermission by remember {
+    mutableStateOf(OutageNotificationManager.hasNotificationPermission(context))
+  }
+
+  DisposableEffect(lifecycleOwner, context) {
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_RESUME) {
+        hasNotificationPermission = OutageNotificationManager.hasNotificationPermission(context)
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
+
+  val notificationPermissionLauncher =
+    rememberLauncherForActivityResult(
+      contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+      hasNotificationPermission = granted || OutageNotificationManager.hasNotificationPermission(context)
+      if (granted) {
+        viewModel.setPushNotificationsEnabled(true)
+      }
+    }
+
+  val requestNotificationPermission: () -> Unit = {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+  }
+
+  LaunchedEffect(deepLinkMonitorId) {
+    val id = deepLinkMonitorId ?: return@LaunchedEffect
+    viewModel.loadMonitorDetail(id)
+    navController.navigate("monitor/$id") {
+      launchSingleTop = true
+    }
+    onDeepLinkConsumed()
+  }
+
   val statusColors = LocalStatusColors.current
   val isTopLevel = currentRoute in topLevelTabs.map { it.route }
   val ongoingCount = incidentsState.incidents.count { it.ongoing }
+  val showNotificationPromptBanner =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+      !hasNotificationPermission &&
+      !preferences.notificationBannerDismissed
 
   BoxWithConstraints(
     modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
@@ -288,6 +375,9 @@ fun GjnWmStatusApp(viewModel: StatusViewModel) {
               uiState = overviewState,
               detailState = detailState,
               latestIncident = incidentsState.incidents.firstOrNull(),
+              showNotificationPromptBanner = showNotificationPromptBanner,
+              onEnableNotificationsClick = requestNotificationPermission,
+              onDismissNotificationBanner = viewModel::dismissNotificationBanner,
               onRefresh = { viewModel.refreshOverview(isManual = true) },
               onSearchChange = viewModel::updateSearchQuery,
               onFilterChange = viewModel::updateOverviewFilter,
@@ -317,8 +407,14 @@ fun GjnWmStatusApp(viewModel: StatusViewModel) {
           composable("settings") {
             SettingsScreen(
               preferences = preferences,
+              hasNotificationPermission = hasNotificationPermission,
               lastUpdatedUtc = overviewState.overview?.updatedAt,
               monitorCount = overviewState.overview?.monitors?.size ?: 0,
+              onRequestNotificationPermission = requestNotificationPermission,
+              onPushNotificationsToggle = viewModel::setPushNotificationsEnabled,
+              onNotifyOnRecoveryToggle = viewModel::setNotifyOnRecovery,
+              onBackgroundIntervalChange = viewModel::setBackgroundIntervalMinutes,
+              onSendTestPushNotification = viewModel::sendTestPushNotification,
               onThemeChange = viewModel::setThemePreference,
               onRefreshIntervalChange = viewModel::setRefreshIntervalSeconds,
               onAlertSoundToggle = viewModel::setAlertSoundEnabled,
